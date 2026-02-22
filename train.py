@@ -156,7 +156,7 @@ async def add_book(
 
 
 @app.delete("/books/{id}")
-def delete_book(id: int):
+async def delete_book(id: int):
     cursor.execute(
         """
         DELETE FROM books
@@ -182,7 +182,130 @@ def delete_book(id: int):
             "publisher": deleted_book[3],
             "first_publish_year": deleted_book[4],
             "image_url": deleted_book[5],
-        }
+        },
     }
 
 
+# PUT: Path, Form
+@app.put("/books/{id}")
+async def update_fully_book(
+    id: int,
+    title: str = Form(..., min_length=3, max_length=100),
+    author: str = Form(..., min_length=3, max_length=100),
+    publisher: str = Form(..., min_length=3, max_length=100),
+    first_publish_year: int = Form(..., ge=0),
+    image: Optional[UploadFile] = File(None),
+):
+
+    cursor.execute("SELECT image_url FROM books WHERE id = %s", (id,))
+    existing = cursor.fetchone()
+
+    if not existing:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    image_url = existing[0]
+
+    if image:
+        image_path = f"images/{image.filename}"
+        with open(image_path, "wb") as buffer:
+            shutil.copyfileobj(image.file, buffer)
+        image_url = f"http://127.0.0.1:8000/images/{image.filename}"
+
+    cursor.execute(
+        """
+        UPDATE books
+        SET title = %s,
+            author = %s,
+            publisher = %s,
+            first_publish_year = %s,
+            image_url = %s
+        WHERE id = %s
+        RETURNING id, title, author, publisher, first_publish_year, image_url
+        """,
+        (title, author, publisher, first_publish_year, image_url, id),
+    )
+
+    updated_book = cursor.fetchone()
+    conn.commit()
+
+    return {
+        "message": "Book fully updated",
+        "book": {
+            "id": updated_book[0],
+            "title": updated_book[1],
+            "author": updated_book[2],
+            "publisher": updated_book[3],
+            "first_publish_year": updated_book[4],
+            "image_url": updated_book[5],
+        },
+    }
+
+
+# PATCH: query, Form
+@app.patch("/books/{id}")
+async def update_book_part(
+    id: int,
+    title: Optional[str] = Form(None),
+    author: Optional[str] = Form(None),
+    publisher: Optional[str] = Form(None),
+    first_publish_year: Optional[int] = Form(None),
+    image: Optional[UploadFile] = File(None),
+):
+
+    cursor.execute(
+        """
+        SELECT title, author, publisher, first_publish_year, image_url
+        FROM books WHERE id = %s
+        """,
+        (id,),
+    )
+
+    existing = cursor.fetchone()
+
+    if not existing:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    current_title, current_author, current_publisher, current_year, current_image = (
+        existing
+    )
+
+    new_title = title if title is not None else current_title
+    new_author = author if author is not None else current_author
+    new_publisher = publisher if publisher is not None else current_publisher
+    new_year = first_publish_year if first_publish_year is not None else current_year
+    new_image = current_image
+
+    if image:
+        image_path = f"images/{image.filename}"
+        with open(image_path, "wb") as buffer:
+            shutil.copyfileobj(image.file, buffer)
+        new_image = f"http://127.0.0.1:8000/images/{image.filename}"
+
+    cursor.execute(
+        """
+        UPDATE books
+        SET title = %s,
+            author = %s,
+            publisher = %s,
+            first_publish_year = %s,
+            image_url = %s
+        WHERE id = %s
+        RETURNING id, title, author, publisher, first_publish_year, image_url
+        """,
+        (new_title, new_author, new_publisher, new_year, new_image, id),
+    )
+
+    updated_book = cursor.fetchone()
+    conn.commit()
+
+    return {
+        "message": "Book partially updated",
+        "book": {
+            "id": updated_book[0],
+            "title": updated_book[1],
+            "author": updated_book[2],
+            "publisher": updated_book[3],
+            "first_publish_year": updated_book[4],
+            "image_url": updated_book[5],
+        },
+    }
