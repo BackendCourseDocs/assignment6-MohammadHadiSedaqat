@@ -153,3 +153,36 @@ async def add_book(
         "first_publish_year": first_publish_year,
         "image_url": image_url,
     }
+
+
+@app.delete("/books/{id}")
+def delete_book(id: int):
+    cursor.execute(
+        """
+        DELETE FROM books
+        WHERE id = %s
+        RETURNING id, title, author, publisher, first_publish_year, image_url
+        """,
+        (id,),
+    )
+
+    deleted_book = cursor.fetchone()
+
+    if not deleted_book:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    conn.commit()
+
+    return {
+        "message": "Book deleted successfully",
+        "book": {
+            "id": deleted_book[0],
+            "title": deleted_book[1],
+            "author": deleted_book[2],
+            "publisher": deleted_book[3],
+            "first_publish_year": deleted_book[4],
+            "image_url": deleted_book[5],
+        }
+    }
+
+
