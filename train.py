@@ -46,6 +46,8 @@ def load_initial_data():
             "source": "OpenLibrary"
         })
         size += 1
+
+
 @app.on_event("startup")
 async def startup_event():
     load_initial_data()
