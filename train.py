@@ -25,95 +25,88 @@ class BookValidation(BaseModel):
 os.makedirs("images", exist_ok=True)
 app = FastAPI()
 app.mount("/images", StaticFiles(directory="images"), name="images")
+books = []
+size = 0
 
-url = "https://openlibrary.org/search.json"
-params = {"q": "python", "limit": 58}
-response = requests.get(url, params=params)
-data = response.json()
-
-'''
-@app.on_event("startup")
 def load_initial_data():
-    cursor.execute("SELECT COUNT(*) FROM books;")
-    count = cursor.fetchone()[0]
+    global books, size
+    url = "https://openlibrary.org/search.json"
+    params = {"q": "python", "limit": 58}
+    response = requests.get(url, params=params)
+    data = response.json()
 
-    if count == 0:
-        url = "https://openlibrary.org/search.json"
-        params = {"q": "python", "limit": 50}
-        response = requests.get(url, params=params)
-        data = response.json()
-
-        books_to_insert = data.get("docs", [])[:50]
-
-        for book in books_to_insert:
-            title = book.get("title")
-            author = (
-                book.get("author_name", ["Unknown"])[0]
-                if book.get("author_name")
-                else "Unknown"
-            )
-            publisher = (
-                book.get("publisher", ["Unknown"])[0]
-                if book.get("publisher")
-                else "Unknown"
-            )
-            first_publish_year = book.get("first_publish_year")
-
-            cursor.execute(
-                """
-                INSERT INTO books (title, author, publisher, first_publish_year)
-                VALUES (%s, %s, %s, %s)
-                """,
-                (title, author, publisher, first_publish_year),
-            )
-
-        conn.commit()
-'''
+    for index, book in enumerate(data.get("docs", [])):
+        books.append({
+            "id": 999+index,
+            "title": book.get("title", "Unknown"),
+            "author": book.get("author_name", ["Unknown"])[0] if book.get("author_name") else "Unknown",
+            "publisher": book.get("publisher", ["Unknown"])[0] if book.get("publisher") else "Unknown",
+            "first_publish_year": book.get("first_publish_year", 0),
+            "image_url": None,
+            "source": "OpenLibrary"
+        })
+        size += 1
+@app.on_event("startup")
+async def startup_event():
+    load_initial_data()
 
 
 # GET: path or query
 @app.get("/books")
 async def search_books(
-    q: Optional[str] = Query(None, min_length=3, max_length=100),
-    skip: int = Query(0, ge=0),
-    limit: Optional[int] = Query(10, ge=1, le=100),
+        q: str = Query(..., min_length=3, max_length=100, description="Search query"),
+        skip: Optional[int] = Query(0, ge=0),
+        limit: Optional[int] = Query(10, ge=0)
 ):
 
     sql = "SELECT id, title, author, publisher, first_publish_year, image_url FROM books WHERE 1=1"
-    params = []
+    db_params = []
 
     if q:
         query_like = f"%{q.lower()}%"
         sql += " AND (LOWER(title) LIKE %s OR LOWER(author) LIKE %s OR LOWER(publisher) LIKE %s OR CAST(first_publish_year AS TEXT) LIKE %s)"
-        params.extend([query_like, query_like, query_like, query_like])
-
-    sql += " OFFSET %s LIMIT %s"
-    params.extend([skip, limit])
+        db_params.extend([query_like, query_like, query_like, query_like])
 
     try:
-        cursor.execute(sql, tuple(params))
+        cursor.execute(sql, tuple(db_params))
         rows = cursor.fetchall()
     except Exception as e:
         raise HTTPException(status_code=500, detail="Database query failed")
 
-    results = [
+    db_results = [
         {
             "id": row[0],
             "title": row[1],
             "author": row[2],
             "publisher": row[3],
             "first_publish_year": row[4],
-            "image_url": row[5],
+            "image_url": f"http://127.0.0.1:8000/images/{row[5]}" if row[5] else None,
+            "source": "Database"
         }
         for row in rows
     ]
 
+    query_lower = q.lower()
+
+    ext_results = [
+        book for book in books
+        if query_lower in book["title"].lower()
+        or query_lower in book["author"].lower()
+        or query_lower in book["publisher"].lower()
+        or query_lower in str(book["first_publish_year"])
+    ]
+
+    all_result = db_results + ext_results
+    total_count = len(all_result)
+    end = (skip + limit) if limit is not None else total_count
+    final_result = all_result[skip: end]
+
     return {
         "query": q,
-        "count": len(results),
-        "results": results,
+        "all counts": total_count,
+        "results": final_result,
         "skip": skip,
-        "limit": limit,
+        "limit": limit
     }
 
 
