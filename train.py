@@ -210,7 +210,6 @@ async def delete_book(id: int):
         },
     }
 
-
 # PUT: Path, Form
 @app.put("/books/{id}")
 async def update_fully_book(
@@ -222,36 +221,51 @@ async def update_fully_book(
     image: Optional[UploadFile] = File(None),
 ):
 
+    if id >= 999:
+        raise HTTPException(
+            status_code=403, detail="Cannot update books from external source"
+        )
+
     cursor.execute("SELECT image_url FROM books WHERE id = %s", (id,))
     existing = cursor.fetchone()
 
     if not existing:
         raise HTTPException(status_code=404, detail="Book not found")
 
-    image_url = existing[0]
+    old_image_name = existing[0]
+    new_image_name = old_image_name
 
     if image:
-        image_path = f"images/{image.filename}"
-        with open(image_path, "wb") as buffer:
+        ext = os.path.splitext(image.filename)[1]
+        new_image_name = f"{uuid.uuid4()}{ext}"
+        new_path = os.path.join("images", new_image_name)
+
+        with open(new_path, "wb") as buffer:
             shutil.copyfileobj(image.file, buffer)
-        image_url = f"http://127.0.0.1:8000/images/{image.filename}"
 
-    cursor.execute(
-        """
-        UPDATE books
-        SET title = %s,
-            author = %s,
-            publisher = %s,
-            first_publish_year = %s,
-            image_url = %s
-        WHERE id = %s
-        RETURNING id, title, author, publisher, first_publish_year, image_url
-        """,
-        (title, author, publisher, first_publish_year, image_url, id),
-    )
+        if old_image_name:
+            old_path = os.path.join("images", old_image_name)
+            if os.path.exists(old_path):
+                os.remove(old_path)
 
-    updated_book = cursor.fetchone()
-    conn.commit()
+    try:
+        cursor.execute(
+            """
+            UPDATE books
+            SET title = %s,
+                author = %s,
+                publisher = %s,
+                first_publish_year = %s,
+                image_url = %s
+            WHERE id = %s RETURNING id, title, author, publisher, first_publish_year, image_url
+            """,
+            (title, author, publisher, first_publish_year, new_image_name, id),
+        )
+        updated_book = cursor.fetchone()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail="Update failed")
 
     return {
         "message": "Book fully updated",
@@ -261,7 +275,11 @@ async def update_fully_book(
             "author": updated_book[2],
             "publisher": updated_book[3],
             "first_publish_year": updated_book[4],
-            "image_url": updated_book[5],
+            "image_url": (
+                f"http://127.0.0.1:8000/images/{updated_book[5]}"
+                if updated_book[5]
+                else None
+            ),
         },
     }
 
@@ -276,6 +294,8 @@ async def update_book_part(
     first_publish_year: Optional[int] = Form(None),
     image: Optional[UploadFile] = File(None),
 ):
+    if id >= 999:
+        raise HTTPException(status_code=403, detail="Cannot update external API data")
 
     cursor.execute(
         """
@@ -284,7 +304,6 @@ async def update_book_part(
         """,
         (id,),
     )
-
     existing = cursor.fetchone()
 
     if not existing:
@@ -294,43 +313,53 @@ async def update_book_part(
         existing
     )
 
-    new_title = title if title is not None else current_title
-    new_author = author if author is not None else current_author
-    new_publisher = publisher if publisher is not None else current_publisher
-    new_year = first_publish_year if first_publish_year is not None else current_year
-    new_image = current_image
+    new_title = title if title is not None else existing[0]
+    new_author = author if author is not None else existing[1]
+    new_publisher = publisher if publisher is not None else existing[2]
+    new_year = first_publish_year if first_publish_year is not None else existing[3]
+    new_image_name = existing[4]
 
     if image:
-        image_path = f"images/{image.filename}"
-        with open(image_path, "wb") as buffer:
+        ext = os.path.splitext(image.filename)[1]
+        new_image_name = f"{uuid.uuid4()}{ext}"
+        new_path = os.path.join("images", new_image_name)
+
+        with open(new_path, "wb") as buffer:
             shutil.copyfileobj(image.file, buffer)
-        new_image = f"http://127.0.0.1:8000/images/{image.filename}"
 
-    cursor.execute(
-        """
-        UPDATE books
-        SET title = %s,
-            author = %s,
-            publisher = %s,
-            first_publish_year = %s,
-            image_url = %s
-        WHERE id = %s
-        RETURNING id, title, author, publisher, first_publish_year, image_url
-        """,
-        (new_title, new_author, new_publisher, new_year, new_image, id),
-    )
+        if existing[4]:
+            old_path = os.path.join("images", existing[4])
+            if os.path.exists(old_path):
+                os.remove(old_path)
 
-    updated_book = cursor.fetchone()
-    conn.commit()
+    try:
+        cursor.execute(
+            """
+            UPDATE books
+            SET title              = %s,
+                author             = %s,
+                publisher          = %s,
+                first_publish_year = %s,
+                image_url          = %s
+            WHERE id = %s RETURNING id, title, author, publisher, first_publish_year, image_url
+            """,
+            (new_title, new_author, new_publisher, new_year, new_image_name, id),
+        )
+        updated_book = cursor.fetchone()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail="Partial update failed")
 
     return {
         "message": "Book partially updated",
         "book": {
             "id": updated_book[0],
             "title": updated_book[1],
-            "author": updated_book[2],
-            "publisher": updated_book[3],
-            "first_publish_year": updated_book[4],
-            "image_url": updated_book[5],
+            "image_url": (
+                f"http://127.0.0.1:8000/images/{updated_book[5]}"
+                if updated_book[5]
+                else None
+            ),
         },
     }
