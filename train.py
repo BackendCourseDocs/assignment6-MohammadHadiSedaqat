@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from typing import Optional
 import os
 import shutil
+import uuid
 import psycopg2
 
 conn = psycopg2.connect(
@@ -86,7 +87,6 @@ async def search_books(
         sql += " AND (LOWER(title) LIKE %s OR LOWER(author) LIKE %s OR LOWER(publisher) LIKE %s OR CAST(first_publish_year AS TEXT) LIKE %s)"
         params.extend([query_like, query_like, query_like, query_like])
 
-
     sql += " OFFSET %s LIMIT %s"
     params.extend([skip, limit])
 
@@ -126,23 +126,40 @@ async def add_book(
     first_publish_year: int = Form(..., ge=0),
     image: Optional[UploadFile] = File(None),
 ):
-    image_url = None
+    image_file_name = None
     if image:
-        image_path = f"images/{image.filename}"
+        extension = os.path.splitext(image.filename)[1]
+        image_file_name = f"{uuid.uuid4()}{extension}"
+        image_path = os.path.join("images", image_file_name)
+
         with open(image_path, "wb") as buffer:
             shutil.copyfileobj(image.file, buffer)
-        image_url = f"http://127.0.0.1:8000/images/{image.filename}"
 
-    cursor.execute(
-        """
-        INSERT INTO books (title, author, publisher, first_publish_year, image_url)
-        VALUES (%s, %s, %s, %s, %s)
-        RETURNING id
-        """,
-        (title, author, publisher, first_publish_year, image_url),
+    try:
+        cursor.execute(
+            """
+            INSERT INTO books (title, author, publisher, first_publish_year, image_url)
+            VALUES (%s, %s, %s, %s, %s) RETURNING id
+            """,
+            (title, author, publisher, first_publish_year, image_file_name),
+        )
+
+        new_id = cursor.fetchone()[0]
+        conn.commit()
+
+    except Exception as e:
+        conn.rollback()
+
+        if image_file_name:
+            delete_path = os.path.join("images", image_file_name)
+            if os.path.exists(delete_path):
+                os.remove(delete_path)
+
+        raise HTTPException(status_code=500, detail="Failed to add book to database")
+
+    image_url = (
+        f"http://127.0.0.1:8000/images/{image_file_name}" if image_file_name else None
     )
-    new_id = cursor.fetchone()[0]
-    conn.commit()
 
     return {
         "id": new_id,
@@ -156,21 +173,35 @@ async def add_book(
 
 @app.delete("/books/{id}")
 async def delete_book(id: int):
-    cursor.execute(
-        """
-        DELETE FROM books
-        WHERE id = %s
-        RETURNING id, title, author, publisher, first_publish_year, image_url
-        """,
-        (id,),
-    )
 
-    deleted_book = cursor.fetchone()
+    try:
+        cursor.execute(
+            """
+            DELETE FROM books WHERE id = %s 
+            RETURNING id, title, author, publisher, first_publish_year, image_url
+            """,
+            (id,),
+        )
 
-    if not deleted_book:
-        raise HTTPException(status_code=404, detail="Book not found")
+        deleted_book = cursor.fetchone()
+        if not deleted_book:
+            conn.rollback()
+            raise HTTPException(status_code=404, detail="Book not found")
 
-    conn.commit()
+        image_file_name = deleted_book[5]
+        if image_file_name:
+            delete_path = os.path.join("images", image_file_name)
+            if os.path.exists(delete_path):
+                os.remove(delete_path)
+
+        conn.commit()
+
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise
+        raise HTTPException(
+            status_code=500, detail="Internal server error while deleting book"
+        )
 
     return {
         "message": "Book deleted successfully",
