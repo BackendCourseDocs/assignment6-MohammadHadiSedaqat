@@ -30,7 +30,7 @@ params = {"q": "python", "limit": 58}
 response = requests.get(url, params=params)
 data = response.json()
 
-
+'''
 @app.on_event("startup")
 def load_initial_data():
     cursor.execute("SELECT COUNT(*) FROM books;")
@@ -67,36 +67,35 @@ def load_initial_data():
             )
 
         conn.commit()
+'''
 
 
 # GET: path or query
 @app.get("/books")
 async def search_books(
     q: Optional[str] = Query(None, min_length=3, max_length=100),
-    skip: int = 0,
-    limit: Optional[int] = None,
+    skip: int = Query(0, ge=0),
+    limit: Optional[int] = Query(10, ge=1, le=100),
 ):
+
+    sql = "SELECT id, title, author, publisher, first_publish_year, image_url FROM books WHERE 1=1"
+    params = []
+
     if q:
         query_like = f"%{q.lower()}%"
-        sql = """
-            SELECT id, title, author, publisher, first_publish_year, image_url
-            FROM books
-            WHERE LOWER(title) LIKE %s
-               OR LOWER(author) LIKE %s
-               OR LOWER(publisher) LIKE %s
-               OR CAST(first_publish_year AS TEXT) LIKE %s
-            OFFSET %s
-        """
-        if limit:
-            sql += f" LIMIT {limit}"
-        cursor.execute(sql, (query_like, query_like, query_like, query_like, skip))
-    else:
-        sql = "SELECT id, title, author, publisher, first_publish_year, image_url FROM books OFFSET %s"
-        if limit:
-            sql += f" LIMIT {limit}"
-        cursor.execute(sql, (skip,))
+        sql += " AND (LOWER(title) LIKE %s OR LOWER(author) LIKE %s OR LOWER(publisher) LIKE %s OR CAST(first_publish_year AS TEXT) LIKE %s)"
+        params.extend([query_like, query_like, query_like, query_like])
 
-    rows = cursor.fetchall()
+
+    sql += " OFFSET %s LIMIT %s"
+    params.extend([skip, limit])
+
+    try:
+        cursor.execute(sql, tuple(params))
+        rows = cursor.fetchall()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Database query failed")
+
     results = [
         {
             "id": row[0],
